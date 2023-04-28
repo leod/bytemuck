@@ -20,8 +20,8 @@ macro_rules! bail {
 
 pub trait Derivable {
   fn ident(input: &DeriveInput) -> Result<syn::Path>;
-  fn implies_trait() -> Option<TokenStream> {
-    None
+  fn implies_trait(input: &DeriveInput) -> Result<Option<TokenStream>> {
+    Ok(None)
   }
   fn asserts(_input: &DeriveInput) -> Result<TokenStream> {
     Ok(quote!())
@@ -40,8 +40,8 @@ pub trait Derivable {
 pub struct Pod;
 
 impl Derivable for Pod {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::Pod))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(Pod))
   }
 
   fn asserts(input: &DeriveInput) -> Result<TokenStream> {
@@ -93,12 +93,15 @@ impl Derivable for Pod {
 pub struct AnyBitPattern;
 
 impl Derivable for AnyBitPattern {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::AnyBitPattern))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(AnyBitPattern))
   }
 
-  fn implies_trait() -> Option<TokenStream> {
-    Some(quote!(::bytemuck::Zeroable))
+  fn implies_trait(input: &DeriveInput) -> Result<Option<TokenStream>> {
+    Ok(Some(
+      get_crate_path(&input.attrs, syn::parse_quote!(Zeroable))?
+        .to_token_stream(),
+    ))
   }
 
   fn asserts(input: &DeriveInput) -> Result<TokenStream> {
@@ -115,8 +118,8 @@ impl Derivable for AnyBitPattern {
 pub struct Zeroable;
 
 impl Derivable for Zeroable {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::Zeroable))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(Zeroable))
   }
 
   fn asserts(input: &DeriveInput) -> Result<TokenStream> {
@@ -131,8 +134,8 @@ impl Derivable for Zeroable {
 pub struct NoUninit;
 
 impl Derivable for NoUninit {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::NoUninit))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(NoUninit))
   }
 
   fn check_attributes(ty: &Data, attributes: &[Attribute]) -> Result<()> {
@@ -186,8 +189,8 @@ impl Derivable for NoUninit {
 pub struct CheckedBitPattern;
 
 impl Derivable for CheckedBitPattern {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::CheckedBitPattern))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(CheckedBitPattern))
   }
 
   fn check_attributes(ty: &Data, attributes: &[Attribute]) -> Result<()> {
@@ -226,7 +229,7 @@ impl Derivable for CheckedBitPattern {
   fn trait_impl(input: &DeriveInput) -> Result<(TokenStream, TokenStream)> {
     match &input.data {
       Data::Struct(DataStruct { fields, .. }) => {
-        generate_checked_bit_pattern_struct(&input.ident, fields, &input.attrs)
+        generate_checked_bit_pattern_struct(&input, fields, &input.attrs)
       }
       Data::Enum(_) => generate_checked_bit_pattern_enum(input),
       Data::Union(_) => bail!("Internal error in CheckedBitPattern derive"), /* shouldn't be possible since we already error in attribute check for this case */
@@ -268,7 +271,7 @@ impl Derivable for TransparentWrapper {
       ),
     };
 
-    Ok(syn::parse_quote!(::bytemuck::TransparentWrapper<#ty>))
+    get_crate_path(&input.attrs, syn::parse_quote!(TransparentWrapper<#ty>))
   }
 
   fn asserts(input: &DeriveInput) -> Result<TokenStream> {
@@ -295,11 +298,13 @@ impl Derivable for TransparentWrapper {
       }
     }
     if let Some(wrapped_field_ty) = wrapped_field_ty {
+      let zeroable_path =
+        get_crate_path(&input.attrs, syn::parse_quote!(Zeroable))?;
       Ok(quote!(
         const _: () = {
           #[repr(transparent)]
           struct AssertWrappedIsWrapped #impl_generics((u8, ::core::marker::PhantomData<#wrapped_field_ty>), #(#nonwrapped_field_tys),*) #where_clause;
-          fn assert_zeroable<Z: ::bytemuck::Zeroable>() {}
+          fn assert_zeroable<Z: #zeroable_path>() {}
           fn check #impl_generics () #where_clause {
             #(
               assert_zeroable::<#nonwrapped_field_tys>();
@@ -333,8 +338,8 @@ impl Derivable for TransparentWrapper {
 pub struct Contiguous;
 
 impl Derivable for Contiguous {
-  fn ident(_: &DeriveInput) -> Result<syn::Path> {
-    Ok(syn::parse_quote!(::bytemuck::Contiguous))
+  fn ident(input: &DeriveInput) -> Result<syn::Path> {
+    get_crate_path(&input.attrs, syn::parse_quote!(Contiguous))
   }
 
   fn trait_impl(input: &DeriveInput) -> Result<(TokenStream, TokenStream)> {
@@ -415,9 +420,9 @@ fn get_field_types<'a>(
 }
 
 fn generate_checked_bit_pattern_struct(
-  input_ident: &Ident, fields: &Fields, attrs: &[Attribute],
+  input: &DeriveInput, fields: &Fields, attrs: &[Attribute],
 ) -> Result<(TokenStream, TokenStream)> {
-  let bits_ty = Ident::new(&format!("{}Bits", input_ident), input_ident.span());
+  let bits_ty = Ident::new(&format!("{}Bits", input.ident), input.ident.span());
 
   let repr = get_repr(attrs)?;
 
@@ -426,7 +431,7 @@ fn generate_checked_bit_pattern_struct(
     .enumerate()
     .map(|(i, field)| {
       field.ident.clone().unwrap_or_else(|| {
-        Ident::new(&format!("field{}", i), input_ident.span())
+        Ident::new(&format!("field{}", i), input.ident.span())
       })
     })
     .collect::<Vec<_>>();
@@ -438,13 +443,19 @@ fn generate_checked_bit_pattern_struct(
   let derive_dbg =
     quote!(#[cfg_attr(not(target_arch = "spirv"), derive(Debug))]);
 
+  let any_bit_pattern_path =
+    get_crate_path(&input.attrs, syn::parse_quote!(AnyBitPattern))?;
+
+  let checked_bit_pattern_path =
+    get_crate_path(&input.attrs, syn::parse_quote!(CheckedBitPattern))?;
+
   Ok((
     quote! {
         #repr
-        #[derive(Clone, Copy, ::bytemuck::AnyBitPattern)]
+        #[derive(Clone, Copy, #any_bit_pattern_path)]
         #derive_dbg
         pub struct #bits_ty {
-            #(#field_name: <#field_ty as ::bytemuck::CheckedBitPattern>::Bits,)*
+            #(#field_name: <#field_ty as #checked_bit_pattern_path>::Bits,)*
         }
     },
     quote! {
@@ -453,7 +464,8 @@ fn generate_checked_bit_pattern_struct(
         #[inline]
         #[allow(clippy::double_comparisons)]
         fn is_valid_bit_pattern(bits: &#bits_ty) -> bool {
-            #(<#field_ty as ::bytemuck::CheckedBitPattern>::is_valid_bit_pattern(&{ bits.#field_name }) && )* true
+            #(<#field_ty as #checked_bit_pattern_path>::
+              is_valid_bit_pattern(&{ bits.#field_name }) && )* true
         }
     },
   ))
@@ -615,6 +627,24 @@ fn get_repr(attributes: &[Attribute]) -> Result<Representation> {
         },
       })
     })
+}
+
+pub fn get_crate_path(
+  attributes: &[Attribute], path: syn::Path,
+) -> Result<syn::Path> {
+  let crate_root = attributes
+    .iter()
+    .filter_map(|attr| {
+      if attr.path().is_ident("bytemuck_crate") {
+        Some(attr.parse_args::<Path>())
+      } else {
+        None
+      }
+    })
+    .last()
+    .unwrap_or_else(|| Ok(syn::parse_quote!(::bytemuck)))?;
+
+  Ok(syn::parse_quote!(#crate_root::#path))
 }
 
 mk_repr! {

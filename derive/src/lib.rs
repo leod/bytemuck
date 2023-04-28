@@ -7,6 +7,7 @@ mod traits;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Result};
+use traits::get_crate_path;
 
 use crate::traits::{
   AnyBitPattern, CheckedBitPattern, Contiguous, Derivable, NoUninit, Pod,
@@ -37,7 +38,7 @@ use crate::traits::{
 ///   b: u16,
 /// }
 /// ```
-#[proc_macro_derive(Pod)]
+#[proc_macro_derive(Pod, attributes(bytemuck_crate))]
 pub fn derive_pod(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let expanded =
     derive_marker_trait::<Pod>(parse_macro_input!(input as DeriveInput));
@@ -53,7 +54,7 @@ pub fn derive_pod(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// The following constraints need to be satisfied for the macro to succeed
 ///
 /// - All fields in the struct must to implement `AnyBitPattern`
-#[proc_macro_derive(AnyBitPattern)]
+#[proc_macro_derive(AnyBitPattern, attributes(bytemuck_crate))]
 pub fn derive_anybitpattern(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -85,7 +86,7 @@ pub fn derive_anybitpattern(
 ///   b: u16,
 /// }
 /// ```
-#[proc_macro_derive(Zeroable)]
+#[proc_macro_derive(Zeroable, attributes(bytemuck_crate))]
 pub fn derive_zeroable(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -140,7 +141,7 @@ pub fn derive_no_uninit(
 ///
 /// If applied to an enum:
 /// - All requirements already checked by `NoUninit`, just impls the trait
-#[proc_macro_derive(CheckedBitPattern)]
+#[proc_macro_derive(CheckedBitPattern, attributes(bytemuck_crate))]
 pub fn derive_maybe_pod(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -179,7 +180,10 @@ pub fn derive_maybe_pod(
 ///   extra: PhantomData<T>,
 /// }
 /// ```
-#[proc_macro_derive(TransparentWrapper, attributes(transparent))]
+#[proc_macro_derive(
+  TransparentWrapper,
+  attributes(transparent, bytemuck_crate)
+)]
 pub fn derive_transparent(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -214,7 +218,7 @@ pub fn derive_transparent(
 ///   C = 2,
 /// }
 /// ```
-#[proc_macro_derive(Contiguous)]
+#[proc_macro_derive(Contiguous, attributes(bytemuck_crate))]
 pub fn derive_contiguous(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -249,12 +253,14 @@ pub fn derive_contiguous(
 ///   c: f32,
 /// }
 /// ```
-#[proc_macro_derive(ByteEq)]
+#[proc_macro_derive(ByteEq, attributes(bytemuck_crate))]
 pub fn derive_byte_eq(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
   let ident = input.ident;
+
+  // TODO: Use bytemuck_crate.
 
   proc_macro::TokenStream::from(quote! {
     impl ::core::cmp::PartialEq for #ident {
@@ -289,12 +295,14 @@ pub fn derive_byte_eq(
 ///   c: f32,
 /// }
 /// ```
-#[proc_macro_derive(ByteHash)]
+#[proc_macro_derive(ByteHash, attributes(bytemuck))]
 pub fn derive_byte_hash(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
   let input = parse_macro_input!(input as DeriveInput);
   let ident = input.ident;
+
+  // TODO: Use bytemuck_crate.
 
   proc_macro::TokenStream::from(quote! {
     impl ::core::hash::Hash for #ident {
@@ -333,17 +341,15 @@ fn derive_marker_trait_inner<Trait: Derivable>(
   let asserts = Trait::asserts(&input)?;
   let (trait_impl_extras, trait_impl) = Trait::trait_impl(&input)?;
 
-  let implies_trait = if let Some(implies_trait) = Trait::implies_trait() {
+  let implies_trait = if let Some(implies_trait) = Trait::implies_trait(&input)?
+  {
     quote!(unsafe impl #impl_generics #implies_trait for #name #ty_generics #where_clause {})
   } else {
     quote!()
   };
 
-  let where_clause = if Trait::requires_where_clause() {
-    where_clause
-  } else {
-    None
-  };
+  let where_clause =
+    if Trait::requires_where_clause() { where_clause } else { None };
 
   Ok(quote! {
     #asserts
@@ -364,9 +370,12 @@ fn add_trait_marker(generics: &mut syn::Generics, trait_name: &syn::Path) {
   let type_params = generics
     .type_params()
     .map(|param| &param.ident)
-    .map(|param| syn::parse_quote!(
-      #param: #trait_name
-    )).collect::<Vec<syn::WherePredicate>>();
+    .map(|param| {
+      syn::parse_quote!(
+        #param: #trait_name
+      )
+    })
+    .collect::<Vec<syn::WherePredicate>>();
 
   generics.make_where_clause().predicates.extend(type_params);
 }

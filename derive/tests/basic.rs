@@ -13,6 +13,18 @@ struct Test {
   b: u16,
 }
 
+mod custom_mod {
+  pub use ::bytemuck;
+}
+
+#[derive(Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
+#[bytemuck_crate(custom_mod::bytemuck)]
+struct TestWithCrateAttribute {
+  a: u16,
+  b: u16,
+}
+
 #[derive(Pod, Zeroable)]
 #[repr(C, packed)]
 struct GenericPackedStruct<T: Pod> {
